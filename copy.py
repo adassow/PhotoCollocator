@@ -6,6 +6,7 @@ import sys
 import logging
 import json
 from datetime import datetime
+import hashlib
 import sqlite3
 conn = sqlite3.connect('images.db')
 conn.text_factory = str
@@ -17,14 +18,17 @@ def serialize_exif(exif):
     for k, v in exif.items():
         result[k] = repr(v)
     return json.dumps(result)
-def get_file_data(path):
+def get_file_data(path_name):
     ctime = None
     mtime = None
     ctime_exif = None
     exif_json = None
     _, file_extension = os.path.splitext(path_name)
-    if file_extension[1:].lower() in ('jpg'):
+    if file_extension[1:].lower() in ('jpg','png','gif'):
+        hash_md5 = hashlib.md5()
         f = open(path_name, 'rb')
+        for chunk in iter(lambda: f.read(4096), b""):
+            hash_md5.update(chunk)
         exif = exifread.process_file(f)
         exif_json = serialize_exif(exif)
         create_time = exif.get('EXIF DateTimeOriginal')
@@ -35,21 +39,23 @@ def get_file_data(path):
     ctime = str(datetime.fromtimestamp(st.st_ctime))
     mtime = str(datetime.fromtimestamp(st.st_mtime))
 
-    return file_extension, ctime, mtime, exif_json, ctime_exif, st.st_size, None
+    return file_extension, ctime, mtime, exif_json, ctime_exif, st.st_size, hash_md5.hexdigest(), path_name
 def init_db(db):
     c = db.cursor()
 
     # Create table
     c.execute('''CREATE TABLE images
-                 (id INTEGER PRIMARY KEY, 
-                 file_name TEXT, 
+                 (id INTEGER PRIMARY KEY,
+                 file_name TEXT,
                  ext TEXT,
-                 crt_time TEXT, 
+                 crt_time TEXT,
                  mod_time TEXT,
                  exif BLOB,
                  crt_time_exif TEXT,
-                 size INTEGER, 
-                 hash TEXT)''')
+                 size INTEGER,
+                 hash TEXT,
+                 file_path TEXT,
+                 dest TEXT)''')
     # Save (commit) the changes
     db.commit()
 
@@ -58,8 +64,8 @@ def store(db, *args):
     logging.info(args[0])
     # Create tableh
     c.execute('''INSERT INTO images (
-        file_name,ext,crt_time,mod_time,exif,crt_time_exif,size,hash) VALUES
-        (?,?,?,?,?,?,?,?)''', args)
+        file_name,ext,crt_time,mod_time,exif,crt_time_exif,size,hash,file_path) VALUES
+        (?,?,?,?,?,?,?,?,?)''', args)
 
     db.commit()
 
@@ -71,12 +77,8 @@ for dirname, dirnames, filenames in os.walk(base_dir):
     for filename in filenames:
         path_name = os.path.join(dirname, filename)
         image_data = get_file_data(path_name)
-        
+
         store(conn, path_name, *image_data)
-
-
-
-
 conn.close()
 
 # directory = "{}/{}".format(dest_dir, create_date.strftime('%Y_%m'))
