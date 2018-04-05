@@ -14,6 +14,7 @@ import (
 	"crypto/md5"
 	"io"
 	"encoding/hex"
+	"time"
 )
 
 var db *sql.DB
@@ -56,6 +57,12 @@ func index(id int, path string) {
 		fmt.Printf("Stat error: %s\n", path)
 		// TODO: handle errors (e.g. file not found)
 	}
+	crtTime := time.Time{}
+	if info.HasBirthTime(){
+		crtTime = info.BirthTime()
+	} else {
+		fmt.Printf("crtTime not found for file %s", path)
+	}
 
 	m, err := goexiftool.NewMediaFile(path)
 	exifCreate, _ := m.GetDate()
@@ -73,7 +80,7 @@ func index(id int, path string) {
 
 	stmt, _ := db.Prepare(`UPDATE images SET 
 	mod_time=?, crt_time=?, crt_time_exif=?, exif=?, size=?, hash=? WHERE id =?`)
-	_, err = stmt.Exec(info.ModTime(), info.BirthTime(), exifCreate, m.String(), stat.Size(), hex.EncodeToString(h.Sum(nil)), id)
+	_, err = stmt.Exec(info.ModTime(), crtTime, exifCreate, m.String(), stat.Size(), hex.EncodeToString(h.Sum(nil)), id)
 	if err != nil {
 		fmt.Printf("Update: %s: %v\n", path, err)
 	}
