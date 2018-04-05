@@ -9,8 +9,7 @@ import (
 	"flag"
 	"strconv"
 	"github.com/djherbis/times"
-	"github.com/barsanuphe/goexiftool"
-	"log"
+	"github.com/adassow/goexiftool"
 	"crypto/md5"
 	"io"
 	"encoding/hex"
@@ -61,21 +60,28 @@ func index(id int, path string) {
 	if info.HasBirthTime(){
 		crtTime = info.BirthTime()
 	} else {
-		fmt.Printf("crtTime not found for file %s", path)
+		fmt.Printf("crtTime not found for file %s\n", path)
 	}
 
+	exifCreate := time.Time{}
 	m, err := goexiftool.NewMediaFile(path)
-	exifCreate, _ := m.GetDate()
-
+	if err != nil {
+		fmt.Printf("exif not found %s\n", path)
+	} else {
+		exifCreate, err = m.GetDate()
+	}
+	if err != nil {
+		fmt.Printf("get exif date error %s\n", path)
+	}
 	f, err := os.Open(path)
 	if err != nil {
-		log.Fatal(err)
+		fmt.Print(err)
 	}
 	defer f.Close()
 
 	h := md5.New()
 	if _, err := io.Copy(h, f); err != nil {
-		log.Fatal(err)
+		fmt.Print(err)
 	}
 
 	stmt, _ := db.Prepare(`UPDATE images SET 
