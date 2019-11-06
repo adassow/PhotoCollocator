@@ -1,130 +1,143 @@
 package main
 
 import (
-	"path/filepath"
+	"PhotoCollocator/photo"
+	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
+	"github.com/urfave/cli"
 	"os"
-	"fmt"
-	"database/sql"
-	_ "github.com/mattn/go-sqlite3"
-	"flag"
-	"strconv"
-	"github.com/djherbis/times"
-	"github.com/adassow/goexiftool"
-	"crypto/md5"
-	"io"
-	"encoding/hex"
-	"time"
+	"path/filepath"
 )
 
-var db *sql.DB
-
-func initDB(){
-	db, _ = sql.Open("sqlite3", "./foo.db")
-	stmt := `CREATE TABLE IF NOT EXISTS images
-                 (id INTEGER PRIMARY KEY,
-                 file_name TEXT,
-                 ext TEXT,
-                 crt_time TEXT,
-                 mod_time TEXT,
-                 exif BLOB,
-                 crt_time_exif TEXT,
-                 size INTEGER,
-                 hash TEXT,
-                 file_path TEXT,
-                 dest TEXT)`
-	db.Exec(stmt)
-}
-func visit(path string, f os.FileInfo, err error) error {
-	if f.IsDir() {
-		return nil
-	}
-	stmt, _ := db.Prepare(`INSERT INTO images ( 
-	file_name, ext, file_path, size) VALUES
-	(?,?,?,?)`)
-	stmt.Exec(f.Name(), filepath.Ext(path), path, strconv.FormatInt(f.Size(),10))
-	fmt.Printf("Visited: %s\n", path)
-	return nil
-}
-func index(id int, path string) {
-	fmt.Printf("Visited index: %s\n", path)
-	stat, err := os.Stat(path)
-	if stat.IsDir() {
-		return
-	}
-	info, err := times.Stat(path)
-	if err != nil {
-		fmt.Printf("Stat error: %s\n", path)
-		// TODO: handle errors (e.g. file not found)
-	}
-	crtTime := time.Time{}
-	if info.HasBirthTime(){
-		crtTime = info.BirthTime()
-	} else {
-		fmt.Printf("crtTime not found for file %s\n", path)
-	}
-
-	exifCreate := time.Time{}
-	m, err := goexiftool.NewMediaFile(path)
-	if err != nil {
-		fmt.Printf("exif not found %s\n", path)
-	} else {
-		exifCreate, err = m.GetDate()
-	}
-	if err != nil {
-		fmt.Printf("get exif date error %s\n", path)
-	}
-	f, err := os.Open(path)
-	if err != nil {
-		fmt.Print(err)
-	}
-	defer f.Close()
-
-	h := md5.New()
-	if _, err := io.Copy(h, f); err != nil {
-		fmt.Print(err)
-	}
-
-	stmt, _ := db.Prepare(`UPDATE images SET 
-	mod_time=?, crt_time=?, crt_time_exif=?, exif=?, size=?, hash=? WHERE id =?`)
-	_, err = stmt.Exec(info.ModTime(), crtTime, exifCreate, m.String(), stat.Size(), hex.EncodeToString(h.Sum(nil)), id)
-	if err != nil {
-		fmt.Printf("Update: %s: %v\n", path, err)
-	}
-}
-
-type row struct {
-	id int
-	path string
-}
-func dbWalk(handle func(int, string)) {
-	rows, _ := db.Query("SELECT id, file_path FROM images")
-
-	var bleh []row
-	for rows.Next() {
-		var path string
-		var id int
-		_ = rows.Scan(&id, &path)
-		bleh = append(bleh, row{id:id, path:path})
-
-	}
-	for _, ble := range bleh{
-		handle(ble.id, ble.path)
-	}
-}
+var (
+	path      string
+	dbName    string
+	threshold float64
+)
 
 func main() {
-	initDB()
-	root := flag.String("p", ".", "dir path")
-	i := flag.Bool("i", false, "index")
-	s := flag.Bool("s", false, "status")
-	flag.Parse()
-	switch {
-	case *i:
-		filepath.Walk(*root, visit)
-	case *s:
-		dbWalk(index)
+	app := cli.NewApp()
+	app.Name = "PhotoCollector"
+	app.Usage = "TODO"
+	app.Commands = []cli.Command{
+		{
+			Name:   "scan",
+			Usage:  "TODO",
+			Action: scan,
+			Flags: []cli.Flag{
+				cli.StringFlag{
+					Name:        "path",
+					Value:       ".",
+					Destination: &path,
+				},
+				cli.StringFlag{
+					Name:        "db-name",
+					Value:       "./photo.db",
+					Destination: &dbName,
+				},
+			},
+		},
+		{
+			Name:   "analize",
+			Usage:  "TODO",
+			Action: analize,
+			Flags: []cli.Flag{
+				cli.StringFlag{
+					Name:        "db-name",
+					Value:       "./photo.db",
+					Destination: &dbName,
+				},
+			},
+		},
+		{
+			Name:   "compare",
+			Usage:  "TODO",
+			Action: compare,
+			Flags: []cli.Flag{
+				cli.StringFlag{
+					Name:        "db-name",
+					Value:       "./photo.db",
+					Destination: &dbName,
+				},
+				cli.Float64Flag{
+					Name:        "threshold",
+					Value:       0.8,
+					Destination: &threshold,
+				},
+			},
+		},
+	}
+	err := app.Run(os.Args)
+	if err != nil {
+		logrus.Fatal(err)
 	}
 }
-func init() {
 
+func scan(c *cli.Context) {
+	storage, err := photo.GetDB(dbName)
+	if err != nil {
+		logrus.WithError(err).Fatal("Database init error")
+	}
+
+	filepath.Walk(path, func(path string, info os.FileInfo, err error) error {
+		if info.IsDir() {
+			return nil
+		}
+		img := photo.Image{
+			FileName: info.Name(),
+			Ext:      filepath.Ext(path),
+			FilePath: path,
+			Size:     int(info.Size()),
+		}
+		err = storage.InsertImage(&img)
+		if err != nil {
+			return errors.Wrap(err, "insert image error")
+		}
+		return nil
+	})
+}
+
+func analize(c *cli.Context) {
+	storage, err := photo.GetDB(dbName)
+	if err != nil {
+		logrus.WithError(err).Fatal("Database init error")
+	}
+	err = storage.Walk(true, func(img *photo.Image) error {
+		if err := img.UpdateModTime(); err != nil {
+			logrus.WithError(err).Warn("Update mod time error")
+		}
+		if err := img.UpdateExif(); err != nil {
+			logrus.WithError(err).Warn("Update exif error")
+		}
+		if err := img.UpdateHash(); err != nil {
+			logrus.WithError(err).Warn("Update hash error")
+		}
+		storage.UpdateImage(img, []string{"mod_time", "crt_time", "crt_time_exif", "hash"})
+		return nil
+	})
+	if err != nil {
+		logrus.WithError(err).Error("Image analize error")
+	}
+}
+func compare(c *cli.Context) {
+	storage, err := photo.GetDB(dbName)
+	if err != nil {
+		logrus.WithError(err).Fatal("Database init error")
+	}
+	images, err := storage.GetImages(true)
+	if err != nil {
+		logrus.WithError(err).Fatal("Cannot get images from db")
+	}
+	dirsDiff, err := photo.CompareDir(images, float32(threshold))
+	if err != nil {
+		logrus.WithError(err).Fatal("CompareDir error")
+	}
+
+	for _, dirDiff := range dirsDiff {
+		logrus.Infof("%s", dirDiff)
+		if dirDiff.Diff == 1 {
+			logrus.Info("deactivate")
+			dirDiff.DeactivateIntersection(storage)
+		}
+	}
 }
